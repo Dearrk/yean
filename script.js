@@ -52,19 +52,12 @@ const CATEGORIES = [
         description: 'Rivers, lakes, and streams',
         overpassTags: ['natural=water', 'waterway'],
     },
-    {
-        id: 'landuse',
-        name: 'Land Use',
-        icon: '🌿',
-        iconClass: 'landuse',
-        description: 'Residential, commercial, forest areas',
-        overpassTags: ['landuse'],
-    },
 ];
 
 // ===== APP STATE =====
 const state = {
     drawMode: false,
+    drawShape: 'polygon',
     drawnPolygon: null,
     drawnLayer: null,
     polygonCoords: null,
@@ -102,6 +95,17 @@ const el = {
     lngValue: $('#lngValue'),
     uploadBtn: $('#uploadBtn'),
     fileInput: $('#fileInput'),
+    downloadDwgBtn: $('#downloadDwgBtn'),
+    falseHeight: $('#falseHeight'),
+    includeContours: $('#includeContours'),
+    contourInterval: $('#contourInterval'),
+    contourIntervalRow: $('#contourIntervalRow'),
+    utmZoneBadge: $('#utmZoneBadge'),
+    // New UI elements
+    drawShapeMenu: $('#drawShapeMenu'),
+    catalogBtn: $('#catalogBtn'),
+    searchForm: $('#searchForm'),
+    searchInput: $('#searchInput'),
 };
 
 // ======================================================================
@@ -137,26 +141,42 @@ map.on('mousemove', (e) => {
 // ======================================================================
 let drawHandler = null;
 
-function startDrawMode() {
+function startDrawMode(shape = 'polygon') {
     state.drawMode = true;
+    state.drawShape = shape;
     el.drawBtn.classList.add('active');
     el.drawInstructions.classList.remove('hidden');
 
     // Remove any existing polygon
     clearDrawing();
 
-    // Create draw handler
-    drawHandler = new L.Draw.Polygon(map, {
-        shapeOptions: {
-            color: CONFIG.polygon.color,
-            fillColor: CONFIG.polygon.fillColor,
-            fillOpacity: CONFIG.polygon.fillOpacity,
-            weight: CONFIG.polygon.weight,
-            dashArray: CONFIG.polygon.dashArray,
-        },
-        allowIntersection: false,
-        showArea: true,
-    });
+    const shapeOptions = {
+        color: CONFIG.polygon.color,
+        fillColor: CONFIG.polygon.fillColor,
+        fillOpacity: CONFIG.polygon.fillOpacity,
+        weight: CONFIG.polygon.weight,
+        dashArray: CONFIG.polygon.dashArray,
+    };
+
+    // Create draw handler based on selected shape
+    if (shape === 'rectangle') {
+        drawHandler = new L.Draw.Rectangle(map, {
+            shapeOptions,
+            showArea: true,
+        });
+    } else if (shape === 'circle') {
+        drawHandler = new L.Draw.Circle(map, {
+            shapeOptions,
+            showArea: true,
+        });
+    } else {
+        drawHandler = new L.Draw.Polygon(map, {
+            shapeOptions,
+            allowIntersection: false,
+            showArea: true,
+        });
+    }
+
     drawHandler.enable();
 }
 
@@ -178,17 +198,32 @@ function clearDrawing() {
     state.polygonCoords = null;
     el.confirmPopup.classList.add('hidden');
     el.clearBtn.classList.add('hidden');
+    if (el.catalogBtn) {
+        el.catalogBtn.classList.add('hidden');
+    }
 }
 
-// Leaflet.draw event: polygon created
+// Leaflet.draw event: polygon/shape created
 map.on(L.Draw.Event.CREATED, (e) => {
     const layer = e.layer;
     drawnItems.addLayer(layer);
 
-    // Store polygon data
+    // Store polygon data, normalizing all shapes to polygon coordinates
     state.drawnLayer = layer;
-    state.drawnPolygon = layer.getLatLngs()[0];
-    state.polygonCoords = state.drawnPolygon.map(ll => [ll.lat, ll.lng]);
+
+    let coords = [];
+    if (layer instanceof L.Circle) {
+        const center = layer.getLatLng();
+        const radius = layer.getRadius(); // meters
+        coords = circleToPolygonCoords(center, radius, 64);
+    } else {
+        const latLngs = layer.getLatLngs();
+        const ring = Array.isArray(latLngs[0]) ? latLngs[0] : latLngs;
+        coords = ring.map(ll => [ll.lat, ll.lng]);
+    }
+
+    state.drawnPolygon = coords;
+    state.polygonCoords = coords;
 
     // Apply final style (solid, not dashed)
     layer.setStyle({
@@ -202,21 +237,47 @@ map.on(L.Draw.Event.CREATED, (e) => {
     // Stop draw mode
     stopDrawMode();
 
-    // Show confirm popup & clear button
+    // Show confirm popup, clear button, and catalog button
     const areaKm2 = calculateArea(state.polygonCoords);
     el.confirmAreaInfo.textContent = `Area: ${formatArea(areaKm2)}`;
     el.confirmPopup.classList.remove('hidden');
     el.clearBtn.classList.remove('hidden');
-});
-
-// ===== Draw button click =====
-el.drawBtn.addEventListener('click', () => {
-    if (state.drawMode) {
-        stopDrawMode();
-    } else {
-        startDrawMode();
+    if (el.catalogBtn) {
+        el.catalogBtn.classList.remove('hidden');
     }
 });
+
+// ===== Draw button click / shape menu toggle =====
+el.drawBtn.addEventListener('click', () => {
+    if (!el.drawShapeMenu) {
+        if (state.drawMode) {
+            stopDrawMode();
+        } else {
+            startDrawMode('polygon');
+        }
+        return;
+    }
+
+    if (el.drawShapeMenu.classList.contains('hidden')) {
+        el.drawShapeMenu.classList.remove('hidden');
+    } else {
+        el.drawShapeMenu.classList.add('hidden');
+        if (state.drawMode) {
+            stopDrawMode();
+        }
+    }
+});
+
+// Shape selection from menu
+if (el.drawShapeMenu) {
+    el.drawShapeMenu.addEventListener('click', (event) => {
+        const target = event.target.closest('.draw-shape-option');
+        if (!target) return;
+        const shape = target.dataset.shape || 'polygon';
+        el.drawShapeMenu.classList.add('hidden');
+        startDrawMode(shape);
+    });
+}
 
 // ===== Cancel draw =====
 el.cancelDraw.addEventListener('click', () => {
@@ -273,7 +334,20 @@ function openPanel() {
     el.areaValue.textContent = formatArea(areaKm2);
     el.vertexCount.textContent = state.polygonCoords.length;
 
+    // Update UTM zone badge
+    if (state.polygonCoords && state.polygonCoords.length > 0 && el.utmZoneBadge) {
+        const cLat = state.polygonCoords.reduce((s, c) => s + c[0], 0) / state.polygonCoords.length;
+        const cLng = state.polygonCoords.reduce((s, c) => s + c[1], 0) / state.polygonCoords.length;
+        const z = Math.floor((cLng + 180) / 6) + 1;
+        const h = cLat >= 0 ? 'N' : 'S';
+        el.utmZoneBadge.textContent = `UTM ${z}${h}`;
+    }
+
     updateDownloadButton();
+
+    if (el.catalogBtn && state.polygonCoords && state.polygonCoords.length > 0) {
+        el.catalogBtn.classList.remove('hidden');
+    }
 }
 
 function closePanel() {
@@ -285,6 +359,17 @@ function closePanel() {
 
 el.closePanelBtn.addEventListener('click', closePanel);
 el.panelOverlay.addEventListener('click', closePanel);
+
+// ===== Catalog button =====
+if (el.catalogBtn) {
+    el.catalogBtn.addEventListener('click', () => {
+        if (!state.polygonCoords) {
+            showToast('Draw and confirm an area to view the catalog.', 'warning');
+            return;
+        }
+        showToast('Catalog will list available datasets for the selected area (coming soon).', 'info');
+    });
+}
 
 // ===== Build Category UI =====
 function buildCategoryList() {
@@ -353,7 +438,9 @@ function updateSelectAll() {
 }
 
 function updateDownloadButton() {
-    el.downloadBtn.disabled = state.selectedCategories.size === 0;
+    const disabled = state.selectedCategories.size === 0;
+    el.downloadBtn.disabled = disabled;
+    el.downloadDwgBtn.disabled = disabled;
 }
 
 // Initialize category list
@@ -862,6 +949,36 @@ function calculateArea(latlngs) {
     return area;
 }
 
+// Approximate a circle as polygon coordinates (lat, lng pairs)
+function circleToPolygonCoords(center, radiusMeters, sides = 64) {
+    const coords = [];
+    const earthRadius = 6378137; // meters
+    const lat = (center.lat * Math.PI) / 180;
+    const lng = (center.lng * Math.PI) / 180;
+    const angularDistance = radiusMeters / earthRadius;
+
+    for (let i = 0; i < sides; i++) {
+        const bearing = (2 * Math.PI * i) / sides;
+        const lat2 = Math.asin(
+            Math.sin(lat) * Math.cos(angularDistance) +
+            Math.cos(lat) * Math.sin(angularDistance) * Math.cos(bearing),
+        );
+        const lng2 =
+            lng +
+            Math.atan2(
+                Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(lat),
+                Math.cos(angularDistance) - Math.sin(lat) * Math.sin(lat2),
+            );
+
+        coords.push([
+            (lat2 * 180) / Math.PI,
+            (((lng2 * 180) / Math.PI + 540) % 360) - 180, // normalize
+        ]);
+    }
+
+    return coords;
+}
+
 function formatArea(areaKm2) {
     if (areaKm2 < 1) {
         return `${(areaKm2 * 1000000).toFixed(0)} m²`;
@@ -1263,6 +1380,609 @@ function handleUploadedGeoJSON(geojson, fileName) {
 }
 
 // ======================================================================
+// EXPORT SETTINGS — UI BINDINGS
+// ======================================================================
+
+// Toggle contour interval row when checkbox changes
+el.includeContours.addEventListener('change', () => {
+    el.contourIntervalRow.classList.toggle('hidden', !el.includeContours.checked);
+});
+
+// ======================================================================
+// WGS84 → UTM COORDINATE TRANSFORMATION
+// ======================================================================
+
+function getUTMZone(lng) {
+    return Math.floor((lng + 180) / 6) + 1;
+}
+
+function getUTMHemisphere(lat) {
+    return lat >= 0 ? 'N' : 'S';
+}
+
+function wgs84ToUTM(lat, lng) {
+    const zone = getUTMZone(lng);
+    const cm = (zone - 1) * 6 - 180 + 3;
+    const a = 6378137.0;
+    const f = 1 / 298.257223563;
+    const k0 = 0.9996;
+    const e = Math.sqrt(2 * f - f * f);
+    const e2 = e * e;
+    const ep2 = e2 / (1 - e2);
+    const lr = lat * Math.PI / 180;
+    const lnr = lng * Math.PI / 180;
+    const l0r = cm * Math.PI / 180;
+    const sL = Math.sin(lr), cL = Math.cos(lr), tL = Math.tan(lr);
+    const N = a / Math.sqrt(1 - e2 * sL * sL);
+    const T = tL * tL;
+    const C = ep2 * cL * cL;
+    const A = cL * (lnr - l0r);
+    const M = a * (
+        (1 - e2 / 4 - 3 * e2 * e2 / 64 - 5 * e2 * e2 * e2 / 256) * lr -
+        (3 * e2 / 8 + 3 * e2 * e2 / 32 + 45 * e2 * e2 * e2 / 1024) * Math.sin(2 * lr) +
+        (15 * e2 * e2 / 256 + 45 * e2 * e2 * e2 / 1024) * Math.sin(4 * lr) -
+        (35 * e2 * e2 * e2 / 3072) * Math.sin(6 * lr)
+    );
+    const easting = k0 * N * (
+        A + (1 - T + C) * A * A * A / 6 +
+        (5 - 18 * T + T * T + 72 * C - 58 * ep2) * A * A * A * A * A / 120
+    ) + 500000;
+    let northing = k0 * (
+        M + N * tL * (
+            A * A / 2 +
+            (5 - T + 9 * C + 4 * C * C) * A * A * A * A / 24 +
+            (61 - 58 * T + T * T + 600 * C - 330 * ep2) * A * A * A * A * A * A / 720
+        )
+    );
+    if (lat < 0) northing += 10000000;
+    return { easting, northing, zone };
+}
+
+function coordToUTM(coord) {
+    const { easting, northing } = wgs84ToUTM(coord[1], coord[0]);
+    return [easting, northing];
+}
+
+// ======================================================================
+// ELEVATION DATA — Open-Elevation API
+// ======================================================================
+
+async function fetchElevationGrid(bbox, resolution = 20) {
+    const latStep = (bbox.ymax - bbox.ymin) / (resolution - 1);
+    const lngStep = (bbox.xmax - bbox.xmin) / (resolution - 1);
+    const locations = [];
+    for (let r = 0; r < resolution; r++)
+        for (let c = 0; c < resolution; c++)
+            locations.push({ latitude: bbox.ymin + r * latStep, longitude: bbox.xmin + c * lngStep });
+
+    const res = await fetch('https://api.open-elevation.com/api/v1/lookup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ locations }),
+    });
+    if (!res.ok) throw new Error(`Elevation API error: ${res.status}`);
+    const data = await res.json();
+
+    const grid = [];
+    for (let r = 0; r < resolution; r++) {
+        const row = [];
+        for (let c = 0; c < resolution; c++) {
+            const idx = r * resolution + c;
+            row.push({ lat: locations[idx].latitude, lng: locations[idx].longitude, elevation: data.results[idx].elevation });
+        }
+        grid.push(row);
+    }
+    return grid;
+}
+
+// ======================================================================
+// CONTOUR GENERATION — Marching Squares
+// ======================================================================
+
+function generateContours(grid, interval) {
+    const rows = grid.length, cols = grid[0].length;
+    let minE = Infinity, maxE = -Infinity;
+    for (let r = 0; r < rows; r++)
+        for (let c = 0; c < cols; c++) {
+            const e = grid[r][c].elevation;
+            if (e < minE) minE = e;
+            if (e > maxE) maxE = e;
+        }
+    const contours = [];
+    for (let level = Math.ceil(minE / interval) * interval; level <= Math.floor(maxE / interval) * interval; level += interval) {
+        const segs = marchingSquares(grid, level);
+        if (segs.length > 0) contours.push({ elevation: level, segments: segs });
+    }
+    return contours;
+}
+
+function marchingSquares(grid, level) {
+    const rows = grid.length, cols = grid[0].length, segs = [];
+    for (let r = 0; r < rows - 1; r++)
+        for (let c = 0; c < cols - 1; c++) {
+            const bl = grid[r][c], br = grid[r][c + 1], tr = grid[r + 1][c + 1], tl = grid[r + 1][c];
+            let ci = 0;
+            if (bl.elevation >= level) ci |= 1;
+            if (br.elevation >= level) ci |= 2;
+            if (tr.elevation >= level) ci |= 4;
+            if (tl.elevation >= level) ci |= 8;
+            if (ci === 0 || ci === 15) continue;
+            const bot = iEdge(bl, br, level), rt = iEdge(br, tr, level);
+            const top = iEdge(tl, tr, level), lft = iEdge(bl, tl, level);
+            switch (ci) {
+                case 1: case 14: segs.push([lft, bot]); break;
+                case 2: case 13: segs.push([bot, rt]); break;
+                case 3: case 12: segs.push([lft, rt]); break;
+                case 4: case 11: segs.push([rt, top]); break;
+                case 5: segs.push([lft, top]); segs.push([bot, rt]); break;
+                case 6: case 9: segs.push([bot, top]); break;
+                case 7: case 8: segs.push([lft, top]); break;
+                case 10: segs.push([lft, bot]); segs.push([rt, top]); break;
+            }
+        }
+    return segs;
+}
+
+function iEdge(p1, p2, level) {
+    const t = (level - p1.elevation) / (p2.elevation - p1.elevation + 1e-10);
+    return [p1.lng + t * (p2.lng - p1.lng), p1.lat + t * (p2.lat - p1.lat)];
+}
+
+// ======================================================================
+// BUILDING HEIGHT EXTRACTION
+// ======================================================================
+
+function getBuildingHeight(props, falseHeight) {
+    const tags = props.tags || props;
+    if (tags.height) { const h = parseFloat(tags.height); if (!isNaN(h) && h > 0) return h; }
+    if (tags['building:levels']) { const l = parseInt(tags['building:levels'], 10); if (!isNaN(l) && l > 0) return l * 3; }
+    return falseHeight;
+}
+
+// ======================================================================
+// AutoLISP SCRIPT — DWG to SHP converter (for AutoCAD users)
+// ======================================================================
+
+function generateAutoLispScript() {
+    return `;;; ============================================
+;;; DWG2SHP.lsp — Export DWG objects to Shapefile
+;;; Load in AutoCAD: (load "DWG2SHP.lsp")
+;;; Run command:    DWG2SHP
+;;; Requires: AutoCAD Map 3D or Civil 3D
+;;; ============================================
+
+(defun c:DWG2SHP (/ shp_out ss cmd_echo)
+  (setq cmd_echo (getvar "CMDECHO"))
+  (setvar "CMDECHO" 0)
+
+  (princ "\\n--- GIS Export: DWG to SHP ---")
+
+  ;; 1. Select objects to export
+  (princ "\\nSelect objects to export to Shapefile...")
+  (setq ss (ssget))
+
+  (if ss
+    (progn
+      ;; 2. Define output file
+      (setq shp_out (getfiled "Save as Shapefile" "" "shp" 1))
+
+      (if shp_out
+        (if (and (member "geomap.arx" (arx)) (getcname "_MAPEXPORT"))
+          (progn
+            (princ "\\nInitializing Map 3D Export...")
+            (command "_-MAPEXPORT" "SHAPE" shp_out "_S" ss "" "_proceed")
+            (princ (strcat "\\nSuccessfully exported to: " shp_out))
+          )
+          (alert "Map 3D/Civil 3D engine not found. SHP export requires these platforms.")
+        )
+        (princ "\\nExport cancelled: No file specified.")
+      )
+    )
+    (princ "\\nExport cancelled: No objects selected.")
+  )
+
+  (setvar "CMDECHO" cmd_echo)
+  (princ)
+)
+`;
+}
+
+// ======================================================================
+// README & LICENSE GENERATORS
+// ======================================================================
+
+function generateReadme(areaKm2, utmZone, hemisphere, categories, featureCounts, hasContours) {
+    const now = new Date().toISOString().split('T')[0];
+    return `YEAN — OSM Geospatial Data Export
+====================================
+Generated: ${now}
+Coordinate System: UTM Zone ${utmZone}${hemisphere} (WGS84)
+Scale: 1:1 (metres)
+Selected Area: ${formatArea(areaKm2)}
+
+Data Categories:
+${categories.map((c, i) => `  - ${c.name}: ${featureCounts[i] || 0} features`).join('\n')}
+${hasContours ? '\nContour lines included from SRTM elevation data.' : ''}
+
+Files in this archive:
+  - drawing.dxf      AutoCAD R12 DXF (AC1009) — open in any CAD software
+  - DWG2SHP.lsp      AutoLISP script to convert DXF/DWG to Shapefile
+  - README.txt       This file
+  - LICENSE.txt      Data attribution and licence
+
+Using DWG2SHP.lsp:
+  1. Open the .dxf file in AutoCAD Map 3D or Civil 3D
+  2. Type: (load "DWG2SHP.lsp") in the command line
+  3. Type: DWG2SHP
+  4. Select objects and choose output location
+
+DXF Details:
+  - 3D buildings extruded using OSM height data or false height
+  - Layers auto-organised by feature type
+  - Compatible with: AutoCAD, BricsCAD, DraftSight, QCAD, LibreCAD, FreeCAD
+
+Data Source:
+  - Map data: (c) OpenStreetMap contributors (ODbL)
+  - Elevation: SRTM / NASA via Open-Elevation API
+  - Extracted via Overpass API
+`;
+}
+
+function generateLicense() {
+    return `DATA LICENSE\n============\n\nMap Data:\n  (c) OpenStreetMap contributors\n  Open Data Commons Open Database License (ODbL)\n  https://www.openstreetmap.org/copyright\n\nElevation Data:\n  SRTM courtesy of NASA / USGS\n  https://open-elevation.com\n\nGenerated by Yean — Geospatial Data Extractor\n`;
+}
+
+// ======================================================================
+// DXF DOWNLOAD HANDLER — FULL GIS PIPELINE
+// Overpass → GeoJSON → UTM Transform → 3D DXF → ZIP
+// ======================================================================
+el.downloadDwgBtn.addEventListener('click', async () => {
+    if (state.selectedCategories.size === 0 || !state.polygonCoords) return;
+
+    const selectedCats = CATEGORIES.filter(c => state.selectedCategories.has(c.id));
+    const falseHeight = parseFloat(el.falseHeight.value) || 9;
+    const wantContours = el.includeContours.checked;
+    const contourInterval = parseInt(el.contourInterval.value, 10) || 5;
+
+    // UTM zone
+    const cLat = state.polygonCoords.reduce((s, c) => s + c[0], 0) / state.polygonCoords.length;
+    const cLng = state.polygonCoords.reduce((s, c) => s + c[1], 0) / state.polygonCoords.length;
+    const utmZone = getUTMZone(cLng);
+    const hemisphere = getUTMHemisphere(cLat);
+
+    const totalSteps = selectedCats.length + (wantContours ? 1 : 0) + 1;
+    let completedSteps = 0;
+
+    showLoading('GIS Export', 'Starting data extraction...');
+    updateProgress(0, totalSteps);
+
+    try {
+        const allEntities = [];
+        const allLayers = new Set();
+        const featureCounts = [];
+        let totalFeatures = 0;
+        const utmExt = { xmin: Infinity, ymin: Infinity, xmax: -Infinity, ymax: -Infinity, zmax: 0 };
+
+        const trackUTM = (e, n, z = 0) => {
+            if (e < utmExt.xmin) utmExt.xmin = e;
+            if (n < utmExt.ymin) utmExt.ymin = n;
+            if (e > utmExt.xmax) utmExt.xmax = e;
+            if (n > utmExt.ymax) utmExt.ymax = n;
+            if (z > utmExt.zmax) utmExt.zmax = z;
+        };
+
+        // ── Fetch & process each category ──
+        for (const cat of selectedCats) {
+            updateLoadingText(`Querying OSM: ${cat.name}...`);
+            const query = buildOverpassQuery(cat.overpassTags, state.polygonCoords);
+            const osmData = await fetchOverpassData(query);
+            const geojson = osmtogeojson(osmData);
+
+            if (geojson.features.length === 0) {
+                showToast(`No ${cat.name} data found`, 'warning');
+                featureCounts.push(0);
+                completedSteps++;
+                updateProgress(completedSteps, totalSteps);
+                continue;
+            }
+
+            updateLoadingText(`Processing ${cat.name} (${geojson.features.length} features)...`);
+            featureCounts.push(geojson.features.length);
+            totalFeatures += geojson.features.length;
+
+            geojson.features.forEach(feature => {
+                if (!feature.geometry) return;
+                const props = feature.properties || {};
+                const tags = props.tags || props;
+                const layer = getDxfLayerName(props, cat.name);
+                allLayers.add(layer);
+                const isBuilding = !!(tags.building);
+
+                switch (feature.geometry.type) {
+                    case 'Point': {
+                        const utm = coordToUTM(feature.geometry.coordinates);
+                        trackUTM(utm[0], utm[1]);
+                        allEntities.push(dxfPoint(utm, layer));
+                        break;
+                    }
+                    case 'LineString': {
+                        const uc = feature.geometry.coordinates.map(c => coordToUTM(c));
+                        uc.forEach(c => trackUTM(c[0], c[1]));
+                        allEntities.push(dxfPolyline(uc, layer, false, 0));
+                        break;
+                    }
+                    case 'MultiLineString':
+                        feature.geometry.coordinates.forEach(line => {
+                            const uc = line.map(c => coordToUTM(c));
+                            uc.forEach(c => trackUTM(c[0], c[1]));
+                            allEntities.push(dxfPolyline(uc, layer, false, 0));
+                        });
+                        break;
+                    case 'Polygon':
+                        feature.geometry.coordinates.forEach(ring => {
+                            const uc = ring.map(c => coordToUTM(c));
+                            uc.forEach(c => trackUTM(c[0], c[1]));
+                            if (isBuilding) {
+                                const h = getBuildingHeight(props, falseHeight);
+                                uc.forEach(c => trackUTM(c[0], c[1], h));
+                                allEntities.push(dxfPolyline(uc, layer, true, 0));
+                                allEntities.push(dxfPolyline(uc, layer + '_Roof', true, h));
+                                allLayers.add(layer + '_Roof');
+                                allEntities.push(...dxf3DWalls(uc, h, layer + '_Walls'));
+                                allLayers.add(layer + '_Walls');
+                            } else {
+                                allEntities.push(dxfPolyline(uc, layer, true, 0));
+                            }
+                        });
+                        break;
+                    case 'MultiPolygon':
+                        feature.geometry.coordinates.forEach(poly => {
+                            poly.forEach(ring => {
+                                const uc = ring.map(c => coordToUTM(c));
+                                uc.forEach(c => trackUTM(c[0], c[1]));
+                                if (isBuilding) {
+                                    const h = getBuildingHeight(props, falseHeight);
+                                    uc.forEach(c => trackUTM(c[0], c[1], h));
+                                    allEntities.push(dxfPolyline(uc, layer, true, 0));
+                                    allEntities.push(dxfPolyline(uc, layer + '_Roof', true, h));
+                                    allLayers.add(layer + '_Roof');
+                                    allEntities.push(...dxf3DWalls(uc, h, layer + '_Walls'));
+                                    allLayers.add(layer + '_Walls');
+                                } else {
+                                    allEntities.push(dxfPolyline(uc, layer, true, 0));
+                                }
+                            });
+                        });
+                        break;
+                }
+            });
+
+            completedSteps++;
+            updateProgress(completedSteps, totalSteps);
+        }
+
+        // ── Contour generation (optional) ──
+        let contourData = [];
+        if (wantContours) {
+            updateLoadingText('Fetching SRTM elevation data...');
+            try {
+                const lats = state.polygonCoords.map(c => c[0]);
+                const lngs = state.polygonCoords.map(c => c[1]);
+                const wgsBbox = { xmin: Math.min(...lngs), ymin: Math.min(...lats), xmax: Math.max(...lngs), ymax: Math.max(...lats) };
+                const grid = await fetchElevationGrid(wgsBbox, 25);
+                updateLoadingText('Generating contour lines...');
+                contourData = generateContours(grid, contourInterval);
+                const cLayer = 'Contours';
+                allLayers.add(cLayer);
+                contourData.forEach(({ elevation, segments }) => {
+                    segments.forEach(seg => {
+                        const s = coordToUTM(seg[0]), e = coordToUTM(seg[1]);
+                        trackUTM(s[0], s[1], elevation);
+                        trackUTM(e[0], e[1], elevation);
+                        allEntities.push(dxfLine3D(s, e, elevation, cLayer));
+                    });
+                });
+                showToast(`Generated ${contourData.length} contour levels`, 'info');
+            } catch (err) {
+                console.warn('Elevation fetch failed:', err);
+                showToast('Contour generation failed. Continuing without contours.', 'warning');
+            }
+            completedSteps++;
+            updateProgress(completedSteps, totalSteps);
+        }
+
+        if (allEntities.length === 0) {
+            hideLoading();
+            showToast('No data found for any selected category', 'warning');
+            return;
+        }
+
+        // ── Build DXF and ZIP ──
+        updateLoadingText('Building DXF with UTM coordinates...');
+        const pad = 10;
+        const bbox = {
+            xmin: utmExt.xmin - pad, ymin: utmExt.ymin - pad,
+            xmax: utmExt.xmax + pad, ymax: utmExt.ymax + pad,
+        };
+
+        const dxfContent = buildR12Dxf(Array.from(allLayers), allEntities, bbox);
+
+        updateLoadingText('Creating ZIP archive...');
+        const areaKm2 = calculateArea(state.polygonCoords);
+        const zip = new JSZip();
+        zip.file('drawing.dxf', dxfContent);
+        zip.file('DWG2SHP.lsp', generateAutoLispScript());
+        zip.file('README.txt', generateReadme(areaKm2, utmZone, hemisphere, selectedCats, featureCounts, contourData.length > 0));
+        zip.file('LICENSE.txt', generateLicense());
+
+        const zipBlob = await zip.generateAsync({ type: 'blob' });
+        saveAs(zipBlob, `yean_export_UTM${utmZone}${hemisphere}.zip`);
+
+        completedSteps++;
+        updateProgress(completedSteps, totalSteps);
+        hideLoading();
+        showToast(
+            `Export complete! ${totalFeatures} features in UTM Zone ${utmZone}${hemisphere} (1:1 m scale).` +
+            (contourData.length > 0 ? ` ${contourData.length} contour levels.` : '') +
+            ' Includes DWG2SHP.lsp for AutoCAD conversion.',
+            'success'
+        );
+    } catch (error) {
+        console.error('GIS export error:', error);
+        hideLoading();
+        showToast(`Export failed: ${error.message}`, 'error');
+    }
+});
+
+// ======================================================================
+// DXF ENTITY GENERATORS — R12 AC1009 format, UTM, 3D
+// ======================================================================
+
+function getDxfLayerName(props, defaultLayer) {
+    const tags = props.tags || props;
+    if (tags.building) return 'Buildings';
+    if (tags.highway) return 'Roads_' + tags.highway;
+    if (tags.waterway) return 'Water_' + tags.waterway;
+    if (tags.natural === 'water') return 'Water_body';
+    return defaultLayer || '0';
+}
+
+function dxfPoint(utm, layer) {
+    return ['0', 'POINT', '8', layer, '10', utm[0].toFixed(3), '20', utm[1].toFixed(3), '30', '0.0'].join('\n');
+}
+
+function dxfPolyline(coords, layer, closed, elevation) {
+    const z = (elevation || 0).toFixed(3);
+    const is3D = elevation > 0;
+    const lines = ['0', 'POLYLINE', '8', layer, '66', '1', '70', closed ? (is3D ? '9' : '1') : (is3D ? '8' : '0'), '30', z];
+    coords.forEach(c => {
+        lines.push('0', 'VERTEX', '8', layer, '10', c[0].toFixed(3), '20', c[1].toFixed(3), '30', z, '70', is3D ? '32' : '0');
+    });
+    lines.push('0', 'SEQEND', '8', layer);
+    return lines.join('\n');
+}
+
+function dxfLine3D(s, e, elev, layer) {
+    const z = elev.toFixed(3);
+    return ['0', 'LINE', '8', layer, '10', s[0].toFixed(3), '20', s[1].toFixed(3), '30', z, '11', e[0].toFixed(3), '21', e[1].toFixed(3), '31', z].join('\n');
+}
+
+function dxf3DWalls(coords, height, layer) {
+    const h = height.toFixed(3);
+    const ents = [];
+    for (let i = 0; i < coords.length - 1; i++) {
+        const x1 = coords[i][0].toFixed(3), y1 = coords[i][1].toFixed(3);
+        const x2 = coords[i + 1][0].toFixed(3), y2 = coords[i + 1][1].toFixed(3);
+        ents.push(['0', '3DFACE', '8', layer, '10', x1, '20', y1, '30', '0.0', '11', x2, '21', y2, '31', '0.0', '12', x2, '22', y2, '32', h, '13', x1, '23', y1, '33', h].join('\n'));
+    }
+    return ents;
+}
+
+// ======================================================================
+// R12 DXF FILE BUILDER
+// ======================================================================
+
+function buildR12Dxf(layers, entityBlocks, bbox) {
+    const allLayers = ['0', ...layers.filter(l => l !== '0')];
+    const colorMap = { Buildings: 30, Buildings_Roof: 40, Buildings_Walls: 52, Contours: 8, Water_body: 4, Roads_primary: 1, Roads_secondary: 3, Roads_tertiary: 5, Roads_residential: 9 };
+    const defPal = [7, 1, 2, 3, 4, 5, 6, 8, 9, 30, 40, 50, 140, 170, 200];
+    const dxf = [];
+
+    // HEADER
+    dxf.push('0', 'SECTION', '2', 'HEADER',
+        '9', '$ACADVER', '1', 'AC1009',
+        '9', '$INSBASE', '10', '0.0', '20', '0.0', '30', '0.0',
+        '9', '$EXTMIN', '10', bbox.xmin.toFixed(3), '20', bbox.ymin.toFixed(3), '30', '0.0',
+        '9', '$EXTMAX', '10', bbox.xmax.toFixed(3), '20', bbox.ymax.toFixed(3), '30', '0.0',
+        '9', '$LIMMIN', '10', bbox.xmin.toFixed(3), '20', bbox.ymin.toFixed(3),
+        '9', '$LIMMAX', '10', bbox.xmax.toFixed(3), '20', bbox.ymax.toFixed(3),
+        '0', 'ENDSEC');
+
+    // TABLES
+    dxf.push('0', 'SECTION', '2', 'TABLES');
+    dxf.push('0', 'TABLE', '2', 'LTYPE', '70', '1', '0', 'LTYPE', '2', 'CONTINUOUS', '70', '0', '3', 'Solid line', '72', '65', '73', '0', '40', '0.0', '0', 'ENDTAB');
+    dxf.push('0', 'TABLE', '2', 'LAYER', '70', String(allLayers.length));
+    allLayers.forEach((n, i) => {
+        const col = colorMap[n] || (n === '0' ? 7 : defPal[i % defPal.length]);
+        dxf.push('0', 'LAYER', '2', n, '70', '0', '62', String(col), '6', 'CONTINUOUS');
+    });
+    dxf.push('0', 'ENDTAB');
+    dxf.push('0', 'TABLE', '2', 'STYLE', '70', '1', '0', 'STYLE', '2', 'STANDARD', '70', '0', '40', '0.0', '41', '1.0', '50', '0.0', '71', '0', '42', '0.2', '3', 'txt', '4', '', '0', 'ENDTAB');
+    dxf.push('0', 'TABLE', '2', 'VIEW', '70', '0', '0', 'ENDTAB');
+    dxf.push('0', 'TABLE', '2', 'UCS', '70', '0', '0', 'ENDTAB');
+    dxf.push('0', 'TABLE', '2', 'VPORT', '70', '1', '0', 'VPORT', '2', '*ACTIVE', '70', '0',
+        '10', '0.0', '20', '0.0', '11', '1.0', '21', '1.0',
+        '12', ((bbox.xmin + bbox.xmax) / 2).toFixed(3), '22', ((bbox.ymin + bbox.ymax) / 2).toFixed(3),
+        '13', '0.0', '23', '0.0', '14', '1.0', '24', '1.0', '15', '0.0', '25', '0.0',
+        '16', '0.0', '26', '0.0', '36', '1.0', '17', '0.0', '27', '0.0', '37', '0.0',
+        '40', (Math.max(bbox.xmax - bbox.xmin, bbox.ymax - bbox.ymin) * 1.1).toFixed(3),
+        '41', '1.5', '42', '50.0', '43', '0.0', '44', '0.0', '50', '0.0', '51', '0.0',
+        '71', '0', '72', '100', '73', '1', '74', '3', '75', '0', '76', '0', '0', 'ENDTAB');
+    dxf.push('0', 'TABLE', '2', 'APPID', '70', '1', '0', 'APPID', '2', 'ACAD', '70', '0', '0', 'ENDTAB');
+    dxf.push('0', 'TABLE', '2', 'DIMSTYLE', '70', '0', '0', 'ENDTAB');
+    dxf.push('0', 'ENDSEC');
+
+    // BLOCKS
+    dxf.push('0', 'SECTION', '2', 'BLOCKS', '0', 'ENDSEC');
+
+    // ENTITIES
+    dxf.push('0', 'SECTION', '2', 'ENTITIES');
+    entityBlocks.forEach(b => dxf.push(b));
+    dxf.push('0', 'ENDSEC');
+
+    dxf.push('0', 'EOF');
+    return dxf.join('\n');
+}
+
+
+
+// ======================================================================
 // INITIALIZATION
 // ======================================================================
 showToast('Welcome to Yean! Draw a polygon or upload a Shapefile/KML to select a boundary.', 'info');
+
+// Search functionality using Nominatim
+if (el.searchForm && el.searchInput) {
+    el.searchForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const query = el.searchInput.value.trim();
+        if (!query) return;
+
+        try {
+            const url = new URL('https://nominatim.openstreetmap.org/search');
+            url.searchParams.set('q', query);
+            url.searchParams.set('format', 'json');
+            url.searchParams.set('limit', '1');
+
+            const res = await fetch(url.toString(), {
+                headers: {
+                    Accept: 'application/json',
+                    'User-Agent': 'Yean-Geospatial-Tool/1.0 (+https://github.com/)',
+                },
+            });
+
+            if (!res.ok) {
+                throw new Error('Search service unavailable');
+            }
+
+            const data = await res.json();
+            if (!data.length) {
+                showToast('No results found for that search.', 'warning');
+                return;
+            }
+
+            const result = data[0];
+            const lat = parseFloat(result.lat);
+            const lon = parseFloat(result.lon);
+
+            if (Number.isFinite(lat) && Number.isFinite(lon)) {
+                map.setView([lat, lon], 14);
+            } else {
+                showToast('Invalid location returned from search.', 'error');
+            }
+        } catch (err) {
+            console.error('Search error', err);
+            showToast('Search failed. Please try again.', 'error');
+        }
+    });
+}

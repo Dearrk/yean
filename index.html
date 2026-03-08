@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Yean — OSM Geospatial Data Extractor</title>
+    <title>Yean — Geospatial Data Extractor</title>
     <meta name="description"
         content="Select areas on the map and download OpenStreetMap geospatial data as Shapefiles. Free, open-source GIS tool.">
 
@@ -78,6 +78,13 @@
         </button>
     </div>
 
+    <!-- Shape Selection Menu -->
+    <div class="draw-shape-menu hidden" id="drawShapeMenu">
+        <button class="draw-shape-option" data-shape="polygon">Polygon</button>
+        <button class="draw-shape-option" data-shape="rectangle">Rectangle</button>
+        <button class="draw-shape-option" data-shape="circle">Circle</button>
+    </div>
+
     <!-- Draw Mode Instructions -->
     <div class="draw-instructions hidden" id="drawInstructions">
         <div class="instruction-pulse"></div>
@@ -114,13 +121,16 @@
                 <h2 class="panel-title">Export Data</h2>
                 <p class="panel-subtitle">Select categories to download</p>
             </div>
-            <button class="panel-close" id="closePanelBtn" aria-label="Close panel">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                    stroke-linecap="round" stroke-linejoin="round">
-                    <line x1="18" y1="6" x2="6" y2="18" />
-                    <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-            </button>
+            <div class="panel-header-actions">
+                <button class="panel-catalog-btn hidden" id="catalogBtn">Catalog</button>
+                <button class="panel-close" id="closePanelBtn" aria-label="Close panel">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18" />
+                        <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                </button>
+            </div>
         </div>
 
         <div class="panel-body">
@@ -171,6 +181,66 @@
             <div class="category-list" id="categoryList">
                 <!-- Populated by JavaScript -->
             </div>
+
+            <!-- DXF Export Settings -->
+            <div class="export-settings" id="exportSettings">
+                <div class="settings-header">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="3" />
+                        <path
+                            d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                    </svg>
+                    <span>DXF Export Settings</span>
+                </div>
+
+                <div class="setting-row">
+                    <div class="setting-label">
+                        <span>False Height</span>
+                        <span class="setting-hint">Default building height when OSM has no data</span>
+                    </div>
+                    <div class="setting-input-group">
+                        <input type="number" class="setting-input" id="falseHeight" value="9" min="1" max="200"
+                            step="1">
+                        <span class="setting-unit">m</span>
+                    </div>
+                </div>
+
+                <div class="setting-row">
+                    <label class="custom-checkbox setting-checkbox">
+                        <input type="checkbox" id="includeContours">
+                        <span class="checkbox-mark">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="20 6 9 17 4 12" />
+                            </svg>
+                        </span>
+                        <div class="setting-label">
+                            <span>Include Contours</span>
+                            <span class="setting-hint">Fetch elevation data (SRTM) for contour lines</span>
+                        </div>
+                    </label>
+                </div>
+
+                <div class="setting-row contour-sub-setting hidden" id="contourIntervalRow">
+                    <div class="setting-label">
+                        <span>Contour Interval</span>
+                    </div>
+                    <div class="setting-input-group">
+                        <input type="number" class="setting-input" id="contourInterval" value="5" min="1" max="100"
+                            step="1">
+                        <span class="setting-unit">m</span>
+                    </div>
+                </div>
+
+                <div class="setting-row">
+                    <div class="setting-label">
+                        <span>Coordinate System</span>
+                        <span class="setting-hint">Auto-detected UTM zone for 1:1 metre scale</span>
+                    </div>
+                    <span class="setting-badge" id="utmZoneBadge">UTM —</span>
+                </div>
+            </div>
         </div>
 
         <div class="panel-footer">
@@ -183,12 +253,31 @@
                 </svg>
                 <span>Download Shapefiles</span>
             </button>
+            <button class="download-btn download-btn-dwg" id="downloadDwgBtn" disabled>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <polyline points="14 2 14 8 20 8" />
+                    <line x1="16" y1="13" x2="8" y2="13" />
+                    <line x1="16" y1="17" x2="8" y2="17" />
+                </svg>
+                <span>Download DXF (AutoCAD)</span>
+            </button>
+            <p class="download-note">If necessary: Kindly convert the DXF to DWG externally.</p>
             <p class="download-note">Data from © OpenStreetMap via Overpass API</p>
         </div>
     </aside>
 
     <!-- Panel Overlay -->
     <div class="panel-overlay hidden" id="panelOverlay"></div>
+
+    <!-- Bottom Search Bar -->
+    <div class="bottom-search-container">
+        <form id="searchForm" class="search-bar">
+            <input type="text" id="searchInput" class="search-input" placeholder="Search place or address" autocomplete="off" />
+            <button type="submit" class="search-button">Search</button>
+        </form>
+    </div>
 
     <!-- Loading Overlay -->
     <div class="loading-overlay hidden" id="loadingOverlay">
