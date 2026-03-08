@@ -5,8 +5,8 @@
 // ===== CONFIGURATION =====
 const CONFIG = {
     map: {
-        center: [20, 0],
-        zoom: 3,
+        center: [20.5937, 78.9629],
+        zoom: 5,
         minZoom: 2,
         maxZoom: 19,
         tileUrl: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
@@ -100,6 +100,8 @@ const el = {
     toastContainer: $('#toastContainer'),
     latValue: $('#latValue'),
     lngValue: $('#lngValue'),
+    uploadBtn: $('#uploadBtn'),
+    fileInput: $('#fileInput'),
 };
 
 // ======================================================================
@@ -920,6 +922,347 @@ function showToast(message, type = 'info') {
 }
 
 // ======================================================================
+// FILE UPLOAD — SHAPEFILE & KML PARSING
+// ======================================================================
+
+// ===== Upload button click =====
+el.uploadBtn.addEventListener('click', () => {
+    el.fileInput.value = ''; // reset
+    el.fileInput.click();
+});
+
+el.fileInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const ext = file.name.split('.').pop().toLowerCase();
+    showLoading('Processing File', `Reading ${file.name}...`);
+
+    try {
+        if (ext === 'kml' || ext === 'kmz') {
+            await processKMLFile(file, ext);
+        } else if (ext === 'zip') {
+            await processZipFile(file);
+        } else if (ext === 'shp') {
+            await processShpFile(file);
+        } else {
+            throw new Error(`Unsupported file format: .${ext}`);
+        }
+    } catch (err) {
+        console.error('File upload error:', err);
+        hideLoading();
+        showToast(`Failed to read file: ${err.message}`, 'error');
+    }
+});
+
+// ===== Process KML / KMZ file =====
+async function processKMLFile(file, ext) {
+    let text;
+
+    if (ext === 'kmz') {
+        // KMZ is a ZIP containing a .kml file
+        const arrayBuffer = await file.arrayBuffer();
+        const zip = await JSZip.loadAsync(arrayBuffer);
+        const kmlFile = Object.keys(zip.files).find(name => name.endsWith('.kml'));
+        if (!kmlFile) throw new Error('No .kml file found inside .kmz archive');
+        text = await zip.files[kmlFile].async('string');
+    } else {
+        text = await file.text();
+    }
+
+    const geojson = parseKML(text);
+    handleUploadedGeoJSON(geojson, file.name);
+}
+
+// ===== Parse KML to GeoJSON =====
+function parseKML(text) {
+    const parser = new DOMParser();
+    const xml = parser.parseFromString(text, 'text/xml');
+    const features = [];
+
+    const placemarks = xml.querySelectorAll('Placemark');
+    placemarks.forEach((pm) => {
+        const name = pm.querySelector('name')?.textContent || '';
+
+        // Find Polygon elements
+        const polygons = pm.querySelectorAll('Polygon');
+        polygons.forEach((poly) => {
+            const outerCoords = poly.querySelector('outerBoundaryIs LinearRing coordinates');
+            if (!outerCoords) return;
+
+            const outerRing = parseKMLCoordinates(outerCoords.textContent);
+            const innerRings = Array.from(
+                poly.querySelectorAll('innerBoundaryIs LinearRing coordinates')
+            ).map((el) => parseKMLCoordinates(el.textContent));
+
+            features.push({
+                type: 'Feature',
+                properties: { name },
+                geometry: {
+                    type: 'Polygon',
+                    coordinates: [outerRing, ...innerRings],
+                },
+            });
+        });
+
+        // Find MultiGeometry > Polygon
+        const multiGeos = pm.querySelectorAll('MultiGeometry');
+        multiGeos.forEach((mg) => {
+            const mgPolygons = mg.querySelectorAll('Polygon');
+            const polyCoords = [];
+            mgPolygons.forEach((poly) => {
+                const outerCoords = poly.querySelector('outerBoundaryIs LinearRing coordinates');
+                if (!outerCoords) return;
+                const outerRing = parseKMLCoordinates(outerCoords.textContent);
+                polyCoords.push([outerRing]);
+            });
+            if (polyCoords.length > 0) {
+                features.push({
+                    type: 'Feature',
+                    properties: { name },
+                    geometry: {
+                        type: 'MultiPolygon',
+                        coordinates: polyCoords,
+                    },
+                });
+            }
+        });
+
+        // Find LineString (also useful for boundaries)
+        if (features.length === 0) {
+            const lineStrings = pm.querySelectorAll('LineString');
+            lineStrings.forEach((ls) => {
+                const coordsEl = ls.querySelector('coordinates');
+                if (!coordsEl) return;
+                const coords = parseKMLCoordinates(coordsEl.textContent);
+                // Close the ring to form a polygon if possible
+                if (coords.length >= 3) {
+                    const closed = [...coords];
+                    if (closed[0][0] !== closed[closed.length - 1][0] ||
+                        closed[0][1] !== closed[closed.length - 1][1]) {
+                        closed.push([...closed[0]]);
+                    }
+                    features.push({
+                        type: 'Feature',
+                        properties: { name },
+                        geometry: { type: 'Polygon', coordinates: [closed] },
+                    });
+                }
+            });
+        }
+    });
+
+    return { type: 'FeatureCollection', features };
+}
+
+function parseKMLCoordinates(text) {
+    return text
+        .trim()
+        .split(/\s+/)
+        .map((tuple) => {
+            const parts = tuple.split(',').map(Number);
+            return [parts[0], parts[1]]; // [lng, lat] — GeoJSON order
+        })
+        .filter((c) => !isNaN(c[0]) && !isNaN(c[1]));
+}
+
+// ===== Process ZIP file (containing Shapefile) =====
+async function processZipFile(file) {
+    const arrayBuffer = await file.arrayBuffer();
+    const zip = await JSZip.loadAsync(arrayBuffer);
+
+    // Find .shp file inside the ZIP
+    const shpFileName = Object.keys(zip.files).find((name) =>
+        name.toLowerCase().endsWith('.shp')
+    );
+
+    if (!shpFileName) {
+        throw new Error('No .shp file found in the ZIP archive');
+    }
+
+    const shpBuffer = await zip.files[shpFileName].async('arraybuffer');
+    const geojson = readShpBinary(shpBuffer);
+    handleUploadedGeoJSON(geojson, file.name);
+}
+
+// ===== Process standalone .shp file =====
+async function processShpFile(file) {
+    const arrayBuffer = await file.arrayBuffer();
+    const geojson = readShpBinary(arrayBuffer);
+    handleUploadedGeoJSON(geojson, file.name);
+}
+
+// ===== SHP Binary Reader =====
+function readShpBinary(arrayBuffer) {
+    const view = new DataView(arrayBuffer);
+    const features = [];
+
+    // Validate file code
+    const fileCode = view.getInt32(0, false); // big-endian
+    if (fileCode !== 9994) throw new Error('Invalid Shapefile: bad file code');
+
+    const fileLength = view.getInt32(24, false) * 2; // in bytes
+    const shapeType = view.getInt32(32, true); // little-endian
+
+    // Read records
+    let offset = 100; // skip header
+    while (offset < fileLength && offset < arrayBuffer.byteLength - 8) {
+        const recordNum = view.getInt32(offset, false);
+        const contentLength = view.getInt32(offset + 4, false) * 2; // in bytes
+        offset += 8; // skip record header
+
+        if (contentLength <= 0 || offset + contentLength > arrayBuffer.byteLength) break;
+
+        const recShapeType = view.getInt32(offset, true);
+
+        let geometry = null;
+
+        if (recShapeType === 0) {
+            // Null shape — skip
+        } else if (recShapeType === 1 || recShapeType === 11 || recShapeType === 21) {
+            // Point, PointZ, PointM
+            geometry = {
+                type: 'Point',
+                coordinates: [
+                    view.getFloat64(offset + 4, true),
+                    view.getFloat64(offset + 12, true),
+                ],
+            };
+        } else if (recShapeType === 3 || recShapeType === 13 || recShapeType === 23) {
+            // PolyLine, PolyLineZ, PolyLineM
+            geometry = readPolyShape(view, offset, 'LineString', 'MultiLineString');
+        } else if (recShapeType === 5 || recShapeType === 15 || recShapeType === 25) {
+            // Polygon, PolygonZ, PolygonM
+            geometry = readPolyShape(view, offset, 'Polygon', 'MultiPolygon');
+        }
+
+        if (geometry) {
+            features.push({ type: 'Feature', properties: {}, geometry });
+        }
+
+        offset += contentLength;
+    }
+
+    return { type: 'FeatureCollection', features };
+}
+
+function readPolyShape(view, offset, singleType, multiType) {
+    let off = offset + 4; // skip shape type
+    // Bounding box: xmin, ymin, xmax, ymax (skip)
+    off += 32;
+
+    const numParts = view.getInt32(off, true); off += 4;
+    const numPoints = view.getInt32(off, true); off += 4;
+
+    const parts = [];
+    for (let i = 0; i < numParts; i++) {
+        parts.push(view.getInt32(off, true));
+        off += 4;
+    }
+
+    const points = [];
+    for (let i = 0; i < numPoints; i++) {
+        const x = view.getFloat64(off, true);
+        const y = view.getFloat64(off + 8, true);
+        points.push([x, y]);
+        off += 16;
+    }
+
+    // Split into rings/parts
+    const rings = [];
+    for (let i = 0; i < numParts; i++) {
+        const start = parts[i];
+        const end = i < numParts - 1 ? parts[i + 1] : numPoints;
+        rings.push(points.slice(start, end));
+    }
+
+    if (singleType === 'LineString') {
+        return rings.length === 1
+            ? { type: 'LineString', coordinates: rings[0] }
+            : { type: 'MultiLineString', coordinates: rings };
+    } else {
+        // Polygon — each part is a ring (first = outer, rest = holes)
+        return rings.length === 1
+            ? { type: 'Polygon', coordinates: rings }
+            : { type: 'Polygon', coordinates: rings };
+    }
+}
+
+// ===== Handle uploaded GeoJSON and display on map =====
+function handleUploadedGeoJSON(geojson, fileName) {
+    if (!geojson || !geojson.features || geojson.features.length === 0) {
+        hideLoading();
+        showToast('No features found in the uploaded file', 'warning');
+        return;
+    }
+
+    // Find first polygon/multipolygon feature for boundary
+    const polyFeature = geojson.features.find((f) =>
+        f.geometry &&
+        (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon')
+    );
+
+    if (!polyFeature) {
+        hideLoading();
+        showToast('No polygon boundaries found in the file. Only Polygon geometries can be used as boundaries.', 'warning');
+        return;
+    }
+
+    // Clear any existing drawing
+    clearDrawing();
+
+    // Convert GeoJSON polygon to Leaflet layer
+    const geoJsonLayer = L.geoJSON(polyFeature, {
+        style: {
+            color: CONFIG.polygon.color,
+            fillColor: CONFIG.polygon.fillColor,
+            fillOpacity: 0.15,
+            weight: 2,
+        },
+    });
+
+    // Add to drawn items
+    geoJsonLayer.eachLayer((layer) => {
+        drawnItems.addLayer(layer);
+        state.drawnLayer = layer;
+    });
+
+    // Extract polygon coordinates for Overpass query (lat, lng format)
+    let coords;
+    if (polyFeature.geometry.type === 'Polygon') {
+        // Outer ring, convert [lng, lat] -> [lat, lng]
+        coords = polyFeature.geometry.coordinates[0].map((c) => [c[1], c[0]]);
+    } else {
+        // MultiPolygon — use first polygon's outer ring
+        coords = polyFeature.geometry.coordinates[0][0].map((c) => [c[1], c[0]]);
+    }
+
+    state.drawnPolygon = coords;
+    state.polygonCoords = coords;
+
+    // Fit map to boundary
+    const bounds = geoJsonLayer.getBounds();
+    map.fitBounds(bounds, { padding: [50, 50] });
+
+    // Show confirm popup
+    const areaKm2 = calculateArea(state.polygonCoords);
+    el.confirmAreaInfo.textContent = `Area: ${formatArea(areaKm2)} · from ${fileName}`;
+    el.confirmPopup.classList.remove('hidden');
+    el.clearBtn.classList.remove('hidden');
+
+    hideLoading();
+
+    const featureCount = geojson.features.filter(
+        (f) => f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon')
+    ).length;
+
+    showToast(
+        `Loaded boundary from ${fileName} (${featureCount} polygon${featureCount > 1 ? 's' : ''} found, using first)`,
+        'success'
+    );
+}
+
+// ======================================================================
 // INITIALIZATION
 // ======================================================================
-showToast('Welcome to Yean! Click the pen icon to draw a polygon on the map.', 'info');
+showToast('Welcome to Yean! Draw a polygon or upload a Shapefile/KML to select a boundary.', 'info');

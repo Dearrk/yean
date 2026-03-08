@@ -59,6 +59,15 @@
             </svg>
             <span class="fab-tooltip">Draw Polygon</span>
         </button>
+        <button class="fab fab-upload" id="uploadBtn" title="Upload Boundary">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
+            </svg>
+            <span class="fab-tooltip">Upload SHP / KML</span>
+        </button>
         <button class="fab fab-danger hidden" id="clearBtn" title="Clear All">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                 stroke-linecap="round" stroke-linejoin="round">
@@ -196,6 +205,9 @@
 
     <!-- Toast Container -->
     <div class="toast-container" id="toastContainer"></div>
+
+    <!-- Hidden File Input -->
+    <input type="file" id="fileInput" accept=".zip,.shp,.kml,.kmz" style="display:none" />
 
     <!-- Scripts -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
