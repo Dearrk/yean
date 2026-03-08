@@ -4,17 +4,205 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OSM Dark Mode Map</title>
+    <title>Yean — OSM Geospatial Data Extractor</title>
+    <meta name="description"
+        content="Select areas on the map and download OpenStreetMap geospatial data as Shapefiles. Free, open-source GIS tool.">
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
     <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+
+    <!-- Leaflet Draw CSS -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
+
+    <!-- Custom CSS -->
     <link rel="stylesheet" href="styles.css">
 </head>
 
 <body>
+    <!-- Map Container -->
     <div id="map"></div>
 
-    <!-- Leaflet JS -->
+    <!-- Top Bar -->
+    <header class="top-bar" id="topBar">
+        <div class="logo">
+            <div class="logo-icon">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6" />
+                    <line x1="8" y1="2" x2="8" y2="18" />
+                    <line x1="16" y1="6" x2="16" y2="22" />
+                </svg>
+            </div>
+            <span class="logo-text">Yean</span>
+        </div>
+        <div class="coord-display" id="coordDisplay">
+            <span class="coord-label">LAT</span>
+            <span class="coord-value" id="latValue">0.0000°</span>
+            <span class="coord-sep">|</span>
+            <span class="coord-label">LNG</span>
+            <span class="coord-value" id="lngValue">0.0000°</span>
+        </div>
+    </header>
+
+    <!-- Floating Action Buttons -->
+    <div class="fab-container" id="fabContainer">
+        <button class="fab fab-primary" id="drawBtn" title="Draw Polygon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 20h9" />
+                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+            </svg>
+            <span class="fab-tooltip">Draw Polygon</span>
+        </button>
+        <button class="fab fab-danger hidden" id="clearBtn" title="Clear All">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+            </svg>
+            <span class="fab-tooltip">Clear Drawing</span>
+        </button>
+    </div>
+
+    <!-- Draw Mode Instructions -->
+    <div class="draw-instructions hidden" id="drawInstructions">
+        <div class="instruction-pulse"></div>
+        <span>Click on the map to place vertices · Click the first point to close</span>
+        <button class="instruction-esc" id="cancelDraw">ESC</button>
+    </div>
+
+    <!-- Confirm Popup -->
+    <div class="confirm-popup hidden" id="confirmPopup">
+        <div class="confirm-info" id="confirmAreaInfo">Area: —</div>
+        <div class="confirm-actions">
+            <button class="btn btn-confirm" id="confirmBtn">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12" />
+                </svg>
+                Confirm
+            </button>
+            <button class="btn btn-discard" id="cancelBtn">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+                Discard
+            </button>
+        </div>
+    </div>
+
+    <!-- Side Panel -->
+    <aside class="side-panel" id="sidePanel">
+        <div class="panel-header">
+            <div>
+                <h2 class="panel-title">Export Data</h2>
+                <p class="panel-subtitle">Select categories to download</p>
+            </div>
+            <button class="panel-close" id="closePanelBtn" aria-label="Close panel">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+            </button>
+        </div>
+
+        <div class="panel-body">
+            <!-- Area Stats -->
+            <div class="area-stats" id="areaStats">
+                <div class="stat-card">
+                    <span class="stat-icon">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                        </svg>
+                    </span>
+                    <div class="stat-info">
+                        <span class="stat-label">Selected Area</span>
+                        <span class="stat-value" id="areaValue">—</span>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-icon">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <circle cx="12" cy="12" r="3" />
+                            <path d="M12 2v4m0 12v4m10-10h-4M6 12H2" />
+                        </svg>
+                    </span>
+                    <div class="stat-info">
+                        <span class="stat-label">Vertices</span>
+                        <span class="stat-value" id="vertexCount">—</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Select All -->
+            <div class="select-all-row">
+                <label class="custom-checkbox" id="selectAllLabel">
+                    <input type="checkbox" id="selectAll">
+                    <span class="checkbox-mark">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                    </span>
+                    <span class="checkbox-text">Select All Categories</span>
+                </label>
+            </div>
+
+            <!-- Category List -->
+            <div class="category-list" id="categoryList">
+                <!-- Populated by JavaScript -->
+            </div>
+        </div>
+
+        <div class="panel-footer">
+            <button class="download-btn" id="downloadBtn" disabled>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="7 10 12 15 17 10" />
+                    <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                <span>Download Shapefiles</span>
+            </button>
+            <p class="download-note">Data from © OpenStreetMap via Overpass API</p>
+        </div>
+    </aside>
+
+    <!-- Panel Overlay -->
+    <div class="panel-overlay hidden" id="panelOverlay"></div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay hidden" id="loadingOverlay">
+        <div class="loading-card">
+            <div class="loading-spinner"></div>
+            <h3 class="loading-title" id="loadingTitle">Fetching Data</h3>
+            <p class="loading-text" id="loadingText">Querying OpenStreetMap...</p>
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <p class="progress-label" id="progressLabel">0 / 0</p>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- Scripts -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+    <script src="https://unpkg.com/osmtogeojson@3.0.0-beta.5/osmtogeojson.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
     <script src="script.js"></script>
 </body>
 
