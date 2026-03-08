@@ -15,7 +15,7 @@ const CONFIG = {
     overpass: {
         endpoint: 'https://overpass-api.de/api/interpreter',
         timeout: 120,
-        maxAreaKm2: 100,
+        maxAreaKm2: 1500,
     },
     polygon: {
         color: '#3b82f6',
